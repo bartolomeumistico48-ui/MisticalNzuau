@@ -10,13 +10,14 @@ interface Props {
 export const AudioResonator: React.FC<Props> = ({ text, frequency }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isZenMode, setIsZenMode] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [audioBuffer, setAudioBuffer] = useState<AudioBuffer | null>(null);
 
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
-  const lfoRef = useRef<OscillatorNode | null>(null);
+  const zenNodesRef = useRef<AudioNode[]>([]);
   const startTimeRef = useRef<number>(0);
   const offsetRef = useRef<number>(0);
   const animationFrameRef = useRef<number | null>(null);
@@ -25,6 +26,67 @@ export const AudioResonator: React.FC<Props> = ({ text, frequency }) => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const createZenEngine = (ctx: AudioContext, targetFreq: number) => {
+    const masterZenGain = ctx.createGain();
+    masterZenGain.gain.setValueAtTime(0, ctx.currentTime);
+    masterZenGain.gain.linearRampToValueAtTime(0.3, ctx.currentTime + 2);
+    masterZenGain.connect(ctx.destination);
+
+    // 1. Deep Earth Drone (Brown Noise)
+    const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 5, ctx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    let lastOut = 0;
+    for (let i = 0; i < noiseBuffer.length; i++) {
+      const white = Math.random() * 2 - 1;
+      output[i] = (lastOut + (0.02 * white)) / 1.02;
+      lastOut = output[i];
+      output[i] *= 3.5; // Gain compensation
+    }
+    const noiseSource = ctx.createBufferSource();
+    noiseSource.buffer = noiseBuffer;
+    noiseSource.loop = true;
+
+    const noiseFilter = ctx.createBiquadFilter();
+    noiseFilter.type = 'lowpass';
+    noiseFilter.frequency.setValueAtTime(120, ctx.currentTime);
+    noiseFilter.Q.setValueAtTime(1, ctx.currentTime);
+
+    const noiseLFO = ctx.createOscillator();
+    const noiseLFOGain = ctx.createGain();
+    noiseLFO.frequency.value = 0.05; // Very slow wind-like shift
+    noiseLFOGain.gain.value = 50;
+    noiseLFO.connect(noiseLFOGain);
+    noiseLFOGain.connect(noiseFilter.frequency);
+    noiseLFO.start();
+
+    noiseSource.connect(noiseFilter);
+    noiseFilter.connect(masterZenGain);
+    noiseSource.start();
+
+    // 2. Harmonic Resonance Layer (Singing Bowl Simulation)
+    const harmonics = [1, 1.5, 2, 2.61];
+    harmonics.forEach((h, i) => {
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(targetFreq * h, ctx.currentTime);
+      
+      // Slow pulsing
+      const p = ctx.createGain();
+      const pulse = ctx.createOscillator();
+      pulse.frequency.value = 0.1 + (i * 0.05);
+      pulse.connect(p.gain);
+      p.gain.setValueAtTime(0.02, ctx.currentTime);
+      
+      osc.connect(p);
+      p.connect(masterZenGain);
+      osc.start();
+      zenNodesRef.current.push(osc, pulse);
+    });
+
+    zenNodesRef.current.push(noiseSource, noiseLFO, masterZenGain);
   };
 
   const updateProgress = () => {
@@ -42,17 +104,17 @@ export const AudioResonator: React.FC<Props> = ({ text, frequency }) => {
 
   const stopPlayback = () => {
     if (audioSourceRef.current) {
-      try {
-        audioSourceRef.current.stop();
-      } catch (e) {}
+      try { audioSourceRef.current.stop(); } catch (e) {}
       audioSourceRef.current = null;
     }
-    if (lfoRef.current) {
+    zenNodesRef.current.forEach(node => {
       try {
-        lfoRef.current.stop();
+        if (node instanceof OscillatorNode || node instanceof AudioBufferSourceNode) node.stop();
+        node.disconnect();
       } catch (e) {}
-      lfoRef.current = null;
-    }
+    });
+    zenNodesRef.current = [];
+    
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
     }
@@ -75,34 +137,35 @@ export const AudioResonator: React.FC<Props> = ({ text, frequency }) => {
     
     const targetFreq = parseInt(frequency) || 432;
 
-    // 1. Peaking Filter for Resonance at the esoteric frequency
+    // Peaking Filter for Resonance at the esoteric frequency
     const peakingFilter = ctx.createBiquadFilter();
     peakingFilter.type = 'peaking';
     peakingFilter.frequency.value = targetFreq;
-    peakingFilter.Q.value = 10.0; // High Q for sharp resonance
-    peakingFilter.gain.value = 12.0; // Boost at target frequency
+    peakingFilter.Q.value = 12.0;
+    peakingFilter.gain.value = 15.0;
 
-    // 2. Subtle Frequency Modulation (LFO) for "shimmering" effect
+    // Subtle Frequency Modulation
     const lfo = ctx.createOscillator();
     const lfoGain = ctx.createGain();
     lfo.type = 'sine';
-    lfo.frequency.value = 0.8; // Very slow modulation (0.8Hz)
-    lfoGain.gain.value = 20; // Modulate resonance center by 20Hz
-    
+    lfo.frequency.value = 0.5;
+    lfoGain.gain.value = 15;
     lfo.connect(lfoGain);
     lfoGain.connect(peakingFilter.frequency);
     lfo.start();
-    lfoRef.current = lfo;
+    zenNodesRef.current.push(lfo);
 
-    // 3. Compressor for density
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-20, ctx.currentTime);
-    compressor.ratio.setValueAtTime(8, ctx.currentTime);
+    compressor.threshold.setValueAtTime(-15, ctx.currentTime);
+    compressor.ratio.setValueAtTime(12, ctx.currentTime);
 
-    // Chain: Source -> Peaking -> Compressor -> Destination
     source.connect(peakingFilter);
     peakingFilter.connect(compressor);
     compressor.connect(ctx.destination);
+
+    if (isZenMode) {
+      createZenEngine(ctx, targetFreq);
+    }
     
     source.start(0, safeOffset);
     audioSourceRef.current = source;
@@ -152,45 +215,69 @@ export const AudioResonator: React.FC<Props> = ({ text, frequency }) => {
   }, []);
 
   return (
-    <div className="mt-6 p-4 border border-cyan-500/30 bg-cyan-950/10 rounded-lg space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+    <div className="mt-8 p-6 border-2 border-emerald-500/30 bg-black/40 rounded-[30px] space-y-6 shadow-[0_0_30px_rgba(16,185,129,0.1)]">
+      <div className="flex flex-col md:flex-row items-center justify-between gap-6">
+        <div className="flex items-center gap-6">
           <button
             onClick={toggleResonance}
             disabled={isLoading}
-            className={`w-12 h-12 rounded-full flex items-center justify-center transition-all ${
+            className={`w-16 h-16 rounded-full flex items-center justify-center transition-all duration-500 ${
               isPlaying 
-              ? 'bg-red-500/20 text-red-500 border border-red-500 shadow-[0_0_15px_rgba(239,68,68,0.4)]' 
-              : 'bg-cyan-500/20 text-cyan-500 border border-cyan-500/50 hover:bg-cyan-500 hover:text-black shadow-[0_0_10px_rgba(6,182,212,0.2)]'
+              ? 'bg-red-500/20 text-red-500 border-2 border-red-500 shadow-[0_0_25px_rgba(239,68,68,0.4)]' 
+              : 'bg-emerald-500/20 text-emerald-500 border-2 border-emerald-500/50 hover:bg-emerald-500 hover:text-black shadow-[0_0_20px_rgba(16,185,129,0.2)]'
             }`}
           >
             {isLoading ? (
-              <div className="w-4 h-4 border-2 border-t-transparent border-current rounded-full animate-spin"></div>
+              <div className="w-6 h-6 border-3 border-t-transparent border-current rounded-full animate-spin"></div>
             ) : isPlaying ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
             ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polygon points="5 3 19 12 5 21 5 3"/></svg>
             )}
           </button>
           <div>
-            <h4 className="text-[10px] uppercase tracking-widest text-cyan-400 font-bold">Ativação de Ngolo</h4>
-            <p className="text-[9px] text-gray-500 font-mono italic">Frequência de Ressonância: {frequency}</p>
+            <h4 className="text-[10px] uppercase tracking-[0.4em] text-emerald-400 font-black">Sintonizador de Ngolo</h4>
+            <div className="flex items-center gap-3 mt-1">
+              <span className="text-[9px] text-amber-500 font-mono font-bold uppercase">{frequency} ATIVO</span>
+              {isZenMode && <span className="text-[8px] bg-amber-500/10 text-amber-500 px-2 py-0.5 rounded-full border border-amber-500/30 animate-pulse font-black">ORIGINAL ZEN FLOW</span>}
+            </div>
           </div>
         </div>
-        <div className="text-[10px] font-mono text-cyan-500/50">
-          {formatTime(currentTime)} / {formatTime(duration)}
+        
+        <div className="flex items-center gap-6">
+          <button 
+            onClick={() => {
+              setIsZenMode(!isZenMode);
+              if (isPlaying) {
+                const currentOffset = audioCtxRef.current!.currentTime - startTimeRef.current + offsetRef.current;
+                stopPlayback();
+                setTimeout(() => startPlayback(currentOffset, audioBuffer!), 100);
+              }
+            }}
+            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-[9px] font-black tracking-widest transition-all ${isZenMode ? 'bg-[#d4af37]/10 border-[#d4af37] text-[#d4af37]' : 'border-emerald-900/50 text-emerald-900'}`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
+            ZEN ENGINE {isZenMode ? 'ON' : 'OFF'}
+          </button>
+          <div className="text-[11px] font-mono text-emerald-500/50 bg-black/40 px-3 py-1 rounded-lg border border-emerald-900/20">
+            {formatTime(currentTime)} / {formatTime(duration)}
+          </div>
         </div>
       </div>
-      <input
-        type="range"
-        min="0"
-        max={duration || 100}
-        step="0.1"
-        value={currentTime}
-        onChange={handleSeek}
-        disabled={!audioBuffer || isLoading}
-        className="w-full h-1 bg-white/10 rounded-full appearance-none cursor-pointer accent-cyan-500"
-      />
+      
+      <div className="relative pt-2">
+        <input
+          type="range"
+          min="0"
+          max={duration || 100}
+          step="0.1"
+          value={currentTime}
+          onChange={handleSeek}
+          disabled={!audioBuffer || isLoading}
+          className="w-full h-1.5 bg-emerald-950/40 rounded-full appearance-none cursor-pointer accent-[#d4af37] hover:accent-emerald-400 transition-all"
+        />
+        <div className="absolute top-0 left-0 h-1.5 bg-emerald-500/20 rounded-full pointer-events-none" style={{ width: `${(currentTime/(duration||100))*100}%` }}></div>
+      </div>
     </div>
   );
 };

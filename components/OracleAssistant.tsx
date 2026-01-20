@@ -36,7 +36,7 @@ export const OracleAssistant: React.FC = () => {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const uiAudioCtxRef = useRef<AudioContext | null>(null);
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null);
-  const droneRef = useRef<{ nodes: (OscillatorNode | GainNode)[] } | null>(null);
+  const droneRef = useRef<{ nodes: AudioNode[] } | null>(null);
   const prevPhaseRef = useRef<RitualPhase>(currentPhase);
   const hasMounted = useRef(false);
 
@@ -77,21 +77,52 @@ export const OracleAssistant: React.FC = () => {
     const ctx = audioCtxRef.current;
     if (ctx.state === 'suspended') ctx.resume();
 
-    const nodes: (OscillatorNode | GainNode)[] = [];
+    const nodes: AudioNode[] = [];
     const now = ctx.currentTime;
     
-    [1, 1.5, 2, 0.5].forEach((mult, i) => {
+    const masterDroneGain = ctx.createGain();
+    masterDroneGain.gain.setValueAtTime(0, now);
+    masterDroneGain.gain.linearRampToValueAtTime(0.04, now + 2.0);
+    masterDroneGain.connect(ctx.destination);
+    nodes.push(masterDroneGain);
+
+    // Multi-layered harmonic drone
+    [1, 1.5, 2, 0.5, 4.02].forEach((mult, i) => {
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = i === 3 ? 'triangle' : 'sine';
       osc.frequency.setValueAtTime(frequency * mult, now);
-      gain.gain.setValueAtTime(0, now);
-      gain.gain.linearRampToValueAtTime(0.015 / (i + 1), now + 2.0);
-      osc.connect(gain);
-      gain.connect(ctx.destination);
+      
+      // Detune slightly for chorusing effect
+      osc.detune.setValueAtTime((Math.random() - 0.5) * 10, now);
+      
+      const panner = ctx.createStereoPanner();
+      panner.pan.setValueAtTime((Math.random() - 0.5), now);
+      
+      gain.gain.setValueAtTime(0.15 / (i + 1), now);
+      
+      osc.connect(panner);
+      panner.connect(gain);
+      gain.connect(masterDroneGain);
       osc.start();
-      nodes.push(osc, gain);
+      nodes.push(osc, gain, panner);
     });
+
+    // Zen Noise Layer (Deep wind)
+    const noiseBuffer = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate);
+    const output = noiseBuffer.getChannelData(0);
+    for (let i = 0; i < noiseBuffer.length; i++) output[i] = Math.random() * 2 - 1;
+    const noise = ctx.createBufferSource();
+    noise.buffer = noiseBuffer;
+    noise.loop = true;
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(200, now);
+    noise.connect(filter);
+    filter.connect(masterDroneGain);
+    noise.start();
+    nodes.push(noise, filter);
+
     droneRef.current = { nodes };
   };
 
@@ -102,17 +133,18 @@ export const OracleAssistant: React.FC = () => {
       droneRef.current.nodes.forEach(node => {
         if (node instanceof GainNode) {
           node.gain.cancelScheduledValues(now);
-          node.gain.linearRampToValueAtTime(0, now + 1.5);
+          node.gain.linearRampToValueAtTime(0, now + 2.0);
         }
       });
       setTimeout(() => {
         droneRef.current?.nodes.forEach(node => {
-          if (node instanceof OscillatorNode) {
-            try { node.stop(); } catch(e) {}
-          }
+          try {
+            if (node instanceof OscillatorNode || node instanceof AudioBufferSourceNode) node.stop();
+            node.disconnect();
+          } catch(e) {}
         });
         droneRef.current = null;
-      }, 1600);
+      }, 2100);
     }
   };
 
@@ -265,7 +297,6 @@ export const OracleAssistant: React.FC = () => {
           }
           body { 
             font-family: 'Cinzel', serif; 
-            /* Mixed green and gold luminous background */
             background: radial-gradient(circle at center, #D4AF37 0%, #ffd700 10%, #008000 70%, #004d00 100%) !important;
             color: #ffffff;
             margin: 0;
